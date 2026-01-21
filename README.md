@@ -71,7 +71,23 @@ You can modify these settings in the `namespace Config` section of `ESP32-sensor
 
 ---
 
-## 대시보드 미리보기 (Dashboard Preview)
+## 시스템 구동 화면 (System Previews)
 
-상단 상태 표시줄(Status Bar)에는 각 센서의 **현재값과 단위**가 표시되며, 하단에는 **4개의 독립적인 환경 수치 그래프**가 실시간으로 그려집니다.
-The status bar shows **live values with units**, and the bottom section features **4 independent trend charts** updating in real-time.
+### 1. 웹 대시보드 (Web Dashboard)
+프리미엄 글래스모피즘 UI가 적용된 실시간 센서 및 FFT 분석 화면입니다.
+The real-time sensor and FFT analysis interface with premium glassmorphism UI.
+
+````carousel
+![Dashboard Overview 1](/home/kiie/.gemini/antigravity/brain/e9adf6a2-9134-459c-9db6-58a2aa65c6d1/uploaded_image_2_1768961649583.png)
+<!-- slide -->
+![Dashboard Overview 2](/home/kiie/.gemini/antigravity/brain/e9adf6a2-9134-459c-9db6-58a2aa65c6d1/uploaded_image_3_1768961649583.png)
+<!-- slide -->
+![Dashboard Data Trend](/home/kiie/.gemini/antigravity/brain/e9adf6a2-9134-459c-9db6-58a2aa65c6d1/uploaded_image_4_1768961649583.png)
+````
+
+### 2. 시리얼 모니터 및 로그 (Serial Monitor & Logs)
+시스템 진단 및 실시간 데이터 업데이트 로그입니다.
+System diagnostics and real-time data update logs.
+
+![Sensor Update Logs 1](/home/kiie/.gemini/antigravity/brain/e9adf6a2-9134-459c-9db6-58a2aa65c6d1/uploaded_image_0_1768961649583.png)
+![System Diagnostic Logs](/home/kiie/.gemini/antigravity/brain/e9adf6a2-9134-459c-9db6-58a2aa65c6d1/uploaded_image_1_1768961649583.png)
