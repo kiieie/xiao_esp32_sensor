@@ -88,6 +88,7 @@ volatile bool timerSensorFlag = false;
 volatile bool servoTriggered = false;
 int servoStart, servoEnd, motionDelay;
 String stSSID, stPW, fftJsonData = "[]";
+SemaphoreHandle_t fftMutex; // Mutex for thread-safe FFT data access
 
 // 타이머 객체
 hw_timer_t *timer0 = NULL; // 사운드 샘플링용
@@ -204,10 +205,10 @@ String buildHtmlPage() {
     p += "</div>";
 
     p += "<div class='grid' style='grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));'>";
-    p += "<div class='card'><b>Temperature (&deg;C)</b><canvas id='tC'></canvas></div>";
-    p += "<div class='card'><b>Humidity (%)</b><canvas id='hC'></canvas></div>";
-    p += "<div class='card'><b>Light (Lux)</b><canvas id='lC'></canvas></div>";
-    p += "<div class='card'><b>Air Quality (VOC)</b><canvas id='vC'></canvas></div>";
+    p += "<div class='card'><b id='h_t'>Temperature</b><canvas id='tC'></canvas></div>";
+    p += "<div class='card'><b id='h_h'>Humidity</b><canvas id='hC'></canvas></div>";
+    p += "<div class='card'><b id='h_l'>Light</b><canvas id='lC'></canvas></div>";
+    p += "<div class='card'><b id='h_v'>Air Quality</b><canvas id='vC'></canvas></div>";
     p += "</div>";
 
     p += "<div class='grid'>";
@@ -230,23 +231,39 @@ String buildHtmlPage() {
     p += "var sD = {t:[], h:[], l:[], v:[]}; var maxLen=60;";
     
     // [Draw] FFT Visualization
-    p += "function drawFFT(d){ fC.width=fC.offsetWidth; fC.height=fC.offsetHeight; fCtx.clearRect(0,0,fC.width,fC.height);";
+    p += "function drawFFT(d){ if(!d || d.length<32) return; fC.width=fC.offsetWidth; fC.height=fC.offsetHeight; fCtx.clearRect(0,0,fC.width,fC.height);";
     p += "var barW=(fC.width-40)/32; var grad=fCtx.createLinearGradient(0,fC.height,0,0); grad.addColorStop(0,'#003322'); grad.addColorStop(1,'#00ff88');";
     p += "for(var i=0;i<32;i++){ var h=(d[i].mag/500)*(fC.height-20); fCtx.fillStyle=grad; fCtx.fillRect(20+i*barW+2, fC.height-h, barW-4, h); ";
     p += "if(i%8==0){ fCtx.fillStyle='#666'; fCtx.font='10px Arial'; fCtx.fillText(d[i].freq+'Hz', 20+i*barW, fC.height-5); } } }";
 
-    // [Draw] Single Line Chart Helper
-    p += "function drawLine(ctx, can, data, color, max){ can.width=can.offsetWidth; can.height=can.offsetHeight; ctx.clearRect(0,0,can.width,can.height);";
-    p += "ctx.beginPath(); ctx.strokeStyle=color; ctx.lineWidth=2; for(var i=0;i<data.length;i++){ var x=(i/(maxLen-1))*can.width, y=can.height-(data[i]/max)*can.height*0.8-10;";
-    p += "if(i==0) ctx.moveTo(x,y); else ctx.lineTo(x,y); } ctx.stroke(); }";
+    // [Draw] Advanced Chart Helper (Grid + Axis + Gradient + Title Update)
+    p += "function drawChart(ctx, can, data, color, max, id, name, unit, val){";
+    p += "can.width=can.offsetWidth; can.height=can.offsetHeight;";
+    p += "var W=can.width, H=can.height, pL=35, pR=10, pT=20, pB=20; var dW=W-pL-pR, dH=H-pT-pB;";
+    p += "ctx.clearRect(0,0,W,H);";
+    p += "if(id) document.getElementById(id).innerHTML = name + ' <span style=\"color:'+color+'; opacity:0.8; font-size:0.9em; margin-left:5px;\">(' + val + unit + ')</span>';";
+    p += "ctx.beginPath(); ctx.strokeStyle='rgba(255,255,255,0.1)'; ctx.lineWidth=1;";
+    p += "ctx.font='10px sans-serif'; ctx.textAlign='right'; ctx.fillStyle='rgba(255,255,255,0.5)';";
+    p += "for(var i=0; i<=5; i++){ var y = pT + dH - (dH*i/5); var v = Math.round(max*i/5); ctx.moveTo(pL, y); ctx.lineTo(W-pR, y); ctx.fillText(v, pL-5, y+3); } ctx.stroke();";
+    p += "if(data.length<2) return;";
+    p += "ctx.beginPath(); for(var i=0; i<data.length; i++){ var x = pL + (i/(maxLen-1))*dW; var dv = data[i]; if(dv>max) dv=max; if(dv<0) dv=0; var y = pT + dH - (dv/max)*dH; if(i==0) ctx.moveTo(x,y); else ctx.lineTo(x,y); }";
+    p += "ctx.save(); var gr = ctx.createLinearGradient(0, pT, 0, pT+dH); gr.addColorStop(0, color); gr.addColorStop(1, 'rgba(0,0,0,0)');";
+    p += "ctx.strokeStyle=color; ctx.lineWidth=2; ctx.stroke();";
+    p += "ctx.lineTo(pL+((data.length-1)/(maxLen-1))*dW, pT+dH); ctx.lineTo(pL, pT+dH); ctx.fillStyle=gr; ctx.globalAlpha=0.3; ctx.fill(); ctx.restore(); }";
 
     // Polling Logic / Get Current Data
-    p += "async function updateData(){ try{ var res=await fetch('/data'); var d=await res.json();";
+    p += "async function updateData(){ try{";
+    p += "var resD=await fetch('/data'); var d=await resD.json();";
+    p += "var resF=await fetch('/fft'); var fftD=await resF.json();";
     p += "document.getElementById('st1').innerHTML='SHT: '+(d.c1? (d.temp.toFixed(1)+'&deg;C / '+d.humi.toFixed(1)+'%') : 'Err'); document.getElementById('st1').style.color=d.c1?'#0f8':'#f44';";
     p += "document.getElementById('st2').innerHTML='BH: '+(d.c2? (d.lux.toFixed(1)+' lx') : 'Err'); document.getElementById('st2').style.color=d.c2?'#0f8':'#f44';";
     p += "document.getElementById('st3').innerHTML='SGP: '+(d.c3? ('VOC: '+d.voc) : 'Err'); document.getElementById('st3').style.color=d.c3?'#0f8':'#f44';";
     p += "sD.t.push(d.temp); sD.h.push(d.humi); sD.l.push(d.lux); sD.v.push(d.voc); if(sD.t.length>maxLen){['t','h','l','v'].forEach(k=>sD[k].shift());}";
-    p += "drawFFT(d.fft); drawLine(tCtx,tC,sD.t,'#ff4444',50); drawLine(hCtx,hC,sD.h,'#4444ff',100); drawLine(lCtx,lC,sD.l,'#ffaa00',1000); drawLine(vCtx,vC,sD.v,'#00ff88',65535);";
+    p += "drawFFT(fftD);";
+    p += "drawChart(tCtx,tC,sD.t,'#ff4444',50,'h_t','Temperature','&deg;C',d.temp.toFixed(1));";
+    p += "drawChart(hCtx,hC,sD.h,'#4444ff',100,'h_h','Humidity','%',d.humi.toFixed(1));";
+    p += "drawChart(lCtx,lC,sD.l,'#ffaa00',1000,'h_l','Light',' lx',d.lux.toFixed(0));";
+    p += "drawChart(vCtx,vC,sD.v,'#00ff88',65535,'h_v','VOC','',d.voc);";
     p += "} catch(e){ console.error(e); } }";
     p += "setInterval(updateData, 1000); updateData();";
     
@@ -380,7 +397,9 @@ void setupNetwork() {
  */
 void setupWebServer() {
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *req){
-        req->send(200, "text/html", buildHtmlPage());
+        AsyncWebServerResponse *response = req->beginResponse(200, "text/html", buildHtmlPage());
+        response->addHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        req->send(response);
     });
 
     server.on("/data", HTTP_GET, [](AsyncWebServerRequest *req){
@@ -393,8 +412,22 @@ void setupWebServer() {
                   ",\"c1\":" + String(gData.hasSHT) + 
                   ",\"c2\":" + String(gData.hasBH) + 
                   ",\"c3\":" + String(gData.hasSGP) + 
-                  ",\"fft\":" + fftJsonData + "}";
-        req->send(200, "application/json", payload);
+                  "}"; // FFT data removed from here
+        
+        AsyncWebServerResponse *response = req->beginResponse(200, "application/json", payload);
+        response->addHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        req->send(response);
+    });
+
+    server.on("/fft", HTTP_GET, [](AsyncWebServerRequest *req){
+        String safeFFT = "[]";
+        if (xSemaphoreTake(fftMutex, 50 / portTICK_PERIOD_MS) == pdTRUE) {
+            safeFFT = fftJsonData;
+            xSemaphoreGive(fftMutex);
+        }
+        AsyncWebServerResponse *response = req->beginResponse(200, "application/json", safeFFT);
+        response->addHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        req->send(response);
     });
 
     server.on("/set_wifi", HTTP_GET, [](AsyncWebServerRequest *req){
@@ -442,7 +475,11 @@ void processFFTLogic() {
         if (i < 31) json += ",";
     }
     json += "]";
-    fftJsonData = json;
+    
+    if (xSemaphoreTake(fftMutex, 10 / portTICK_PERIOD_MS) == pdTRUE) {
+        fftJsonData = json;
+        xSemaphoreGive(fftMutex);
+    }
     isBufferFull = false;
 }
 
@@ -461,7 +498,6 @@ void updateSensorData() {
         uint16_t error = sht4x.measureHighPrecision(gData.temp, gData.humi);
         if (error) {
             consecutiveErrors++;
-            // 에러 출력 빈도 감소 (시리얼 모니터 가독성)
             if (consecutiveErrors % 5 == 0) Serial.printf("[SHT] I2C Status: %u\n", error);
         } else {
             consecutiveErrors = 0;
@@ -485,6 +521,20 @@ void updateSensorData() {
         Serial.println("[System] Bus freeze detected. Recovering...");
         recoverI2CBus();
         consecutiveErrors = 0;
+    }
+
+    // 4. (추가) 센서 재연결 시도 (10초마다)
+    static uint32_t retryTick = 0;
+    if ((!gData.hasSHT || !gData.hasSGP) && (millis() - retryTick >= 10000)) {
+        retryTick = millis();
+        if (!gData.hasSHT) {
+            gData.hasSHT = checkI2CConnection(0x44);
+            if(gData.hasSHT) { sht4x.begin(Wire, 0x44); sht4x.softReset(); Serial.println("[sys] SHT4x Reconnected!"); }
+        }
+        if (!gData.hasSGP) {
+            gData.hasSGP = checkI2CConnection(0x59);
+            if(gData.hasSGP) { sgp41.begin(Wire); Serial.println("[sys] SGP41 Reconnected!"); }
+        }
     }
 
     timerSensorFlag = false;
@@ -598,9 +648,9 @@ void processingTask(void *pvParameters) {
         if (millis() - lastPulse >= 1000) {
             lastPulse = millis();
             
-            // 시리얼 모니터 가독성을 위해 상세 로그 출력
-            Serial.printf("[Info] Sensor Updated | Temp: %.1fC, Humi: %.1f%%, Lux: %.1f, VOC: %u\n", 
-                          gData.temp, gData.humi, gData.lux, gData.voc);
+             // 시리얼 모니터 가독성을 위해 상세 로그 출력
+            Serial.printf("[Info] Sensor Updated %s| Temp: %.1fC, Humi: %.1f%%, Lux: %.1f, VOC: %u\n", 
+                          WiFi.localIP().toString().c_str(), gData.temp, gData.humi, gData.lux, gData.voc);
         }
 
         if (servoTriggered) {
@@ -624,6 +674,9 @@ void setup() {
     Serial.println("\n\n=== ESP32-S3 SENSOR HUB SYSTEM START ===");
 
     EEPROM.begin(Config::EEPROM_SIZE);
+
+    // Mutex 초기화
+    fftMutex = xSemaphoreCreateMutex();
 
     // EEPROM 설정 로드
     servoStart = EEPROM.readInt(0);
