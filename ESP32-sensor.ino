@@ -26,7 +26,11 @@
 #include <BH1750.h>
 #include <arduinoFFT.h>
 #include <ESP32Servo.h>
+#include <arduinoFFT.h>
+#include <ESP32Servo.h>
 #include <EEPROM.h>
+#include <VOCGasIndexAlgorithm.h>
+#include <NOxGasIndexAlgorithm.h>
 
 // ==========================================
 // [SECTION 1] 사용자 설정 (Global Configuration)
@@ -56,7 +60,7 @@ namespace Config {
     constexpr uint32_t TIMER1_INTERVAL_MS = 100; // 센서 수집 주기 (100ms)
 
     // --- 기타 설정 ---
-    constexpr int EEPROM_SIZE = 512;
+    constexpr int EEPROM_SIZE = 1024; // SSID, PW, Mode, AP_SSID, AP_PW 등 저장공간 확보
 }
 
 // ==========================================
@@ -69,6 +73,8 @@ SensirionI2cSht4x sht4x;
 SensirionI2CSgp41 sgp41;
 BH1750 lightMeter;
 Servo myservo;
+VOCGasIndexAlgorithm voc_algorithm;
+NOxGasIndexAlgorithm nox_algorithm;
 
 // 메모리 패닉 방지용 정적 할당
 static double vReal[Config::FFT_SAMPLES];
@@ -77,9 +83,10 @@ ArduinoFFT<double> FFT = ArduinoFFT<double>(vReal, vImag, Config::FFT_SAMPLES, C
 
 // 센서 측정값 전역 저장소
 struct SensorData {
-    float temp = 0.0, humi = 0.0, lux = 0.0;
+    float temp = 25.0, humi = 50.0, lux = 0.0; // SHT가 없을 때를 위한 기본값
     uint16_t voc = 0, nox = 0;
-    bool hasSHT = false, hasBH = false, hasSGP = false;
+    uint16_t srawVoc = 0, srawNox = 0;
+    bool hasBH = false, hasSGP = false, hasSHT = false;
 } gData;
 
 // 시스템 상태 및 제어 플래그
@@ -88,6 +95,8 @@ volatile bool timerSensorFlag = false;
 volatile bool servoTriggered = false;
 int servoStart, servoEnd, motionDelay;
 String stSSID, stPW, fftJsonData = "[]";
+String apSSID, apPW;
+int wifiMode = 0; // 0: Client, 1: AP
 SemaphoreHandle_t fftMutex; // Mutex for thread-safe FFT data access
 
 // 타이머 객체
@@ -132,9 +141,19 @@ void IRAM_ATTR onTimer1() {
 // ==========================================
 
 /**
+ * @brief 지수 평활 필터 (Exponential Moving Average) 헬퍼
+ * @param current 현재 측정값
+ * @param prev 이전 필터링된 값
+ * @param alpha 가중치 (0.0~1.0, 낮을수록 더 부드러움)
+ * @return 필터링된 결과값
+ */
+float applyFilter(float current, float prev, float alpha) {
+    if (prev == 0.0f) return current; // 초기값 설정
+    return (current * alpha) + (prev * (1.0f - alpha));
+}
+
+/**
  * @brief I2C 장치 연결 확인
- * @param address 7비트 I2C 주소
- * @return 연결 성공 여부
  */
 bool checkI2CConnection(uint8_t address) {
     Wire.beginTransmission(address);
@@ -175,99 +194,114 @@ String readEEPROMString(int startAddr) {
 String buildHtmlPage() {
     String p = "<!DOCTYPE html><html lang='ko'><head><meta charset='UTF-8'>";
     p += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
-    p += "<title>ESP32 Premium Sensor Hub</title>";
+    p += "<title>AI Sensor Hub Elite</title>";
+    p += "<link rel='preconnect' href='https://fonts.googleapis.com'><link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>";
+    p += "<link href='https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap' rel='stylesheet'>";
     
-    // --- CSS: Premium Glassmorphism Theme ---
+    // --- CSS: Ultra-Premium Glassmorphism Theme ---
     p += "<style>";
-    p += ":root{--bg:#08080c; --glass:rgba(255,255,255,0.05); --primary:#00ff88; --accent:#7000ff; --text:#e0e0e0;}";
-    p += "body{margin:0; font-family:'Inter',system-ui,-apple-system,sans-serif; background:var(--bg); color:var(--text); overflow-x:hidden;}";
-    p += ".container{max-width:1200px; margin:0 auto; padding:20px;}";
-    p += "h2{font-weight:300; letter-spacing:1px; color:var(--primary); text-shadow:0 0 10px rgba(0,255,136,0.3);}";
-    p += ".grid{display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:20px; margin-bottom:20px;}";
-    p += ".card{background:var(--glass); backdrop-filter:blur(10px); border:1px solid rgba(255,255,255,0.1); border-radius:16px; padding:20px; transition:0.3s;}";
-    p += ".card:hover{border-color:var(--primary); box-shadow:0 0 20px rgba(0,255,136,0.1);}";
-    p += "canvas{width:100% !important; height:200px !important; border-radius:8px;}";
-    p += ".status-bar{display:flex; gap:10px; font-size:12px; margin-bottom:20px; opacity:0.7;}";
-    p += ".status-item{padding:4px 10px; border-radius:20px; border:1px solid currentColor;}";
-    p += ".btn{background:var(--accent); color:#white; border:none; padding:12px 24px; border-radius:8px; cursor:pointer; font-weight:bold; transition:0.2s; width:100%; border:1px solid transparent;}";
-    p += ".btn:hover{filter:brightness(1.2); border-color:var(--primary);}";
-    p += ".config-group{margin-top:15px;} label{display:block; font-size:12px; opacity:0.6; margin-bottom:5px;}";
-    p += "input{background:rgba(0,0,0,0.3); border:1px solid #444; color:white; padding:10px; border-radius:6px; width:100%; box-sizing:border-box; margin-bottom:10px;}";
-    p += "</style></head><body>";
+    p += ":root{--primary:#00ffaa; --secondary:#7000ff; --accent:#ff0077; --bg:#050510; --card-bg:rgba(20,20,35,0.4); --text:#ffffff;}";
+    p += "*{margin:0; padding:0; box-sizing:border-box;}";
+    p += "body{font-family:'Outfit',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; overflow-x:hidden; position:relative;}";
+    p += ".mesh{position:fixed; top:0; left:0; width:100%; height:100%; z-index:-1; background:radial-gradient(at 10% 10%, #1a0f30 0%, transparent 50%), radial-gradient(at 90% 10%, #0a2a20 0%, transparent 50%), radial-gradient(at 50% 90%, #200a1a 0%, transparent 50%); filter:blur(100px); animation:meshShift 20s infinite alternate;}";
+    p += "@keyframes meshShift{0%{transform:scale(1);} 100%{transform:scale(1.2) rotate(5deg);}}";
+    p += ".container{max-width:1400px; margin:0 auto; padding:30px; position:relative; z-index:1;}";
+    p += "header{display:flex; justify-content:space-between; align-items:center; margin-bottom:40px;}";
+    p += "h2{font-weight:600; font-size:28px; letter-spacing:-0.5px; background:linear-gradient(to right, #fff, #888); -webkit-background-clip:text; -webkit-text-fill-color:transparent;}";
+    p += ".badge{padding:6px 15px; border-radius:50px; font-size:12px; font-weight:600; background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.2); backdrop-filter:blur(5px);}";
+    p += ".hero-grid{display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:15px; margin-bottom:30px;}";
+    p += ".hero-card{background:var(--card-bg); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.1); border-radius:24px; padding:20px; transition:0.4s cubic-bezier(0.2,0.8,0.2,1); position:relative; overflow:hidden;}";
+    p += ".hero-card:hover{transform:translateY(-5px); border-color:rgba(255,255,255,0.3);}";
+    p += ".label{font-size:13px; opacity:0.6; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;}";
+    p += ".value{font-size:28px; font-weight:600;} .unit{font-size:14px; opacity:0.5; margin-left:3px;}";
+    p += ".status-dot{width:8px; height:8px; border-radius:50%; background:#444;} .status-active{background:var(--primary); box-shadow:0 0 10px var(--primary);}";
+    p += ".main-grid{display:grid; grid-template-columns:2fr 1fr; gap:20px; margin-bottom:30px;}";
+    p += ".chart-card{background:var(--card-bg); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.08); border-radius:24px; padding:25px;}";
+    p += "@media (max-width:1000px){.main-grid{grid-template-columns:1fr;}}";
+    p += ".sub-grid{display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:20px;}";
+    p += "canvas{width:100% !important; height:200px !important; margin-top:10px;}";
+    p += ".panel{background:rgba(255,255,255,0.03); border-radius:20px; padding:20px; margin-top:20px; border:1px solid rgba(255,255,255,0.05);}";
+    p += "h3{font-size:16px; margin-bottom:15px; opacity:0.8; font-weight:400;}";
+    p += "input, select{background:rgba(0,0,0,0.4); border:1px solid rgba(255,255,255,0.1); color:white; padding:12px; border-radius:12px; width:100%; margin-bottom:15px; font-family:inherit;}";
+    p += ".btn{background:linear-gradient(135deg, var(--secondary), #4e00b3); color:white; border:none; padding:12px; border-radius:12px; cursor:pointer; font-weight:600; width:100%; transition:0.3s;}";
+    p += ".btn:hover{filter:brightness(1.2); transform:scale(1.02);} .btn-prime{background:linear-gradient(135deg, var(--primary), #00cc88); color:#000;}";
+    p += ".sys-list{list-style:none; padding:0;} .sys-item{display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.05); font-size:13px;}";
+    p += ".sys-item span{opacity:0.6;} .sys-item b{color:var(--primary);}";
+    p += "</style></head><body><div class='mesh'></div>";
 
-    // --- HTML Structure ---
-    p += "<div class='container'><h2>ESP32-S3 AI SENSOR HUB <small style='font-size:12px; opacity:0.5;'>V5.1</small></h2>";
-    p += "<div class='status-bar'>";
-    p += "<div id='st1' class='status-item'>SHT: --</div><div id='st2' class='status-item'>BH: --</div><div id='st3' class='status-item'>SGP: --</div></div>";
+    p += "<div class='container'><header><h2>DATA CENTER ENVIRONMENT MONITORING SENSOR HUB <small style='font-weight:300; opacity:0.4;'>V7.4</small></h2>";
+    p += "<div class='badge' id='top_info'>System Online</div></header>";
 
-    p += "<div class='grid'>";
-    p += "<div class='card' style='grid-column: span 2;'><b>Real-time FFT Spectrum</b><canvas id='fC'></canvas></div>";
+    p += "<div class='hero-grid'>";
+    p += "<div class='hero-card'><div class='label'>VOC <div id='dot_voc' class='status-dot'></div></div><div class='value' id='h_voc'>--</div></div>";
+    p += "<div class='hero-card'><div class='label'>NOx <div id='dot_nox' class='status-dot'></div></div><div class='value' id='h_nox'>--</div></div>";
+    p += "<div class='hero-card'><div class='label'>TEMP <div id='dot_temp' class='status-dot'></div></div><div class='value' id='h_temp'>--<span class='unit'>&deg;C</span></div></div>";
+    p += "<div class='hero-card'><div class='label'>HUMI <div id='dot_humi' class='status-dot'></div></div><div class='value' id='h_humi'>--<span class='unit'>%</span></div></div>";
+    p += "<div class='hero-card'><div class='label'>LIGHT <div id='dot_lux' class='status-dot'></div></div><div class='value' id='h_lux'>--<span class='unit'>lx</span></div></div>";
     p += "</div>";
 
-    p += "<div class='grid' style='grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));'>";
-    p += "<div class='card'><b id='h_t'>Temperature</b><canvas id='tC'></canvas></div>";
-    p += "<div class='card'><b id='h_h'>Humidity</b><canvas id='hC'></canvas></div>";
-    p += "<div class='card'><b id='h_l'>Light</b><canvas id='lC'></canvas></div>";
-    p += "<div class='card'><b id='h_v'>Air Quality</b><canvas id='vC'></canvas></div>";
-    p += "</div>";
-
-    p += "<div class='grid'>";
-    p += "<div class='card'><h3>System Setup</h3>";
-    p += "<div class='config-group'><label>WiFi SSID / Password</label>";
+    p += "<div class='main-grid'>";
+    p += "<div class='chart-card' style='display:flex; flex-direction:column; height:100%;'><b>Acoustic Spectrogram (FFT)</b><canvas id='fC' style='flex-grow:1; width:100%; min-height:300px; margin-top:10px;'></canvas></div>";
+    p += "<div class='chart-card'><h3>System Configuration</h3><div class='sys-list'>";
+    p += "<li class='sys-item'><span>Mode</span><b id='cur_mode'>--</b></li>";
+    p += "<li class='sys-item'><span>IP</span><b id='cur_ip'>--</b></li>";
+    p += "<li class='sys-item'><span>SSID</span><b id='cur_ssid'>--</b></li></div>";
+    p += "<div class='panel'><h3>Network Mode</h3><select id='wm' onchange='togglePass()'><option value='0'>Client (STA)</option><option value='1'>Hotspot (AP)</option></select>";
     p += "<input type='text' id='ws' value='"+stSSID+"' placeholder='SSID'><input type='password' id='wp' value='"+stPW+"' placeholder='Password'>";
-    p += "<button onclick='saveWiFi()' class='btn'>Connect & Restart</button></div></div>";
-    
-    p += "<div class='card'><h3>Actuator Control</h3>";
-    p += "<div class='config-group'><label>Servo Range (Start/End) & Delay</label><div style='display:flex; gap:5px;'>";
-    p += "<input type='number' id='ss' value='"+String(servoStart)+"'><input type='number' id='se' value='"+String(servoEnd)+"'><input type='number' id='sd' value='"+String(motionDelay)+"'></div>";
-    p += "<button onclick='saveServo()' class='btn' style='background:#444; margin-bottom:10px;'>Update Values</button>";
-    p += "<button onclick='triggerServo()' class='btn' style='background:var(--primary); color:#000;'>Manual Trigger</button></div></div>";
-    p += "</div></div>";
+    p += "<button onclick='saveWiFi()' class='btn btn-prime'>Apply Network State</button></div></div></div>";
 
-    // --- JavaScript Logic ---
+    p += "<div class='sub-grid'>";
+    p += "<div class='chart-card'><b id='t_t'>Temperature</b><canvas id='tC'></canvas></div>";
+    p += "<div class='chart-card'><b id='t_h'>Humidity</b><canvas id='hC'></canvas></div>";
+    p += "<div class='chart-card'><b id='t_v'>VOC Index</b><canvas id='vC'></canvas></div>";
+    p += "<div class='chart-card'><b id='t_n'>NOx Index</b><canvas id='nC'></canvas></div>";
+    p += "<div class='chart-card'><b id='t_l'>Light Level</b><canvas id='lC'></canvas></div>";
+    p += "</div>";
+
+    p += "<div class='main-grid' style='margin-top:20px;'><div class='chart-card'><h3>Servo Controller</h3><div style='display:flex; gap:10px;'>";
+    p += "<div style='flex:1;'><label style='font-size:10px; opacity:0.5;'>Start</label><input type='number' id='ss' value='"+String(servoStart)+"'></div>";
+    p += "<div style='flex:1;'><label style='font-size:10px; opacity:0.5;'>End</label><input type='number' id='se' value='"+String(servoEnd)+"'></div>";
+    p += "<div style='flex:1;'><label style='font-size:10px; opacity:0.5;'>Delay</label><input type='number' id='sd' value='"+String(motionDelay)+"'></div></div>";
+    p += "<div style='display:flex; gap:10px;'><button onclick='saveServo()' class='btn'>Update</button><button onclick='triggerServo()' class='btn btn-prime'>Trigger</button></div></div>";
+    p += "<div class='chart-card'><h3>Diagnostics</h3><div id='st_bh' class='badge' style='display:block; margin-bottom:8px;'>BH1750: --</div>";
+    p += "<div id='st_sgp' class='badge' style='display:block;'>SGP41: --</div></div></div></div>";
+
     p += "<script>var fC=document.getElementById('fC'), fCtx=fC.getContext('2d');";
-    p += "var tC=document.getElementById('tC'), hC=document.getElementById('hC'), lC=document.getElementById('lC'), vC=document.getElementById('vC');";
-    p += "var tCtx=tC.getContext('2d'), hCtx=hC.getContext('2d'), lCtx=lC.getContext('2d'), vCtx=vC.getContext('2d');";
-    p += "var sD = {t:[], h:[], l:[], v:[]}; var maxLen=60;";
+    p += "var tC=document.getElementById('tC'), hC=document.getElementById('hC'), vC=document.getElementById('vC'), nC=document.getElementById('nC'), lC=document.getElementById('lC');";
+    p += "var tCtx=tC.getContext('2d'), hCtx=hC.getContext('2d'), vCtx=vC.getContext('2d'), nCtx=nC.getContext('2d'), lCtx=lC.getContext('2d');";
+    p += "var sD={t:[], h:[], v:[], n:[], l:[]}; var maxLen=60;";
     
-    // [Draw] FFT Visualization
     p += "function drawFFT(d){ if(!d || d.length<32) return; fC.width=fC.offsetWidth; fC.height=fC.offsetHeight; fCtx.clearRect(0,0,fC.width,fC.height);";
-    p += "var barW=(fC.width-40)/32; var grad=fCtx.createLinearGradient(0,fC.height,0,0); grad.addColorStop(0,'#003322'); grad.addColorStop(1,'#00ff88');";
-    p += "for(var i=0;i<32;i++){ var h=(d[i].mag/500)*(fC.height-20); fCtx.fillStyle=grad; fCtx.fillRect(20+i*barW+2, fC.height-h, barW-4, h); ";
-    p += "if(i%8==0){ fCtx.fillStyle='#666'; fCtx.font='10px Arial'; fCtx.fillText(d[i].freq+'Hz', 20+i*barW, fC.height-5); } } }";
+    p += "var barW=(fC.width-50)/32; var grad=fCtx.createLinearGradient(0,fC.height,0,0); grad.addColorStop(0,'rgba(112,0,255,0.4)'); grad.addColorStop(1,'#00ffaa');";
+    p += "for(var i=0;i<32;i++){ var h=(d[i].mag/400)*fC.height; if(h<2) h=2; fCtx.fillStyle=grad; fCtx.roundRect(40+i*barW+2, fC.height-h-12, barW-4, h, 4); fCtx.fill();";
+    p += "if(i%8==0){ fCtx.fillStyle='rgba(255,255,255,0.4)'; fCtx.font='10px Outfit'; fCtx.fillText(d[i].freq+'Hz', 40+i*barW, fC.height-2); } } }";
 
-    // [Draw] Advanced Chart Helper (Grid + Axis + Gradient + Title Update)
-    p += "function drawChart(ctx, can, data, color, max, id, name, unit, val){";
-    p += "can.width=can.offsetWidth; can.height=can.offsetHeight;";
-    p += "var W=can.width, H=can.height, pL=35, pR=10, pT=20, pB=20; var dW=W-pL-pR, dH=H-pT-pB;";
-    p += "ctx.clearRect(0,0,W,H);";
-    p += "if(id) document.getElementById(id).innerHTML = name + ' <span style=\"color:'+color+'; opacity:0.8; font-size:0.9em; margin-left:5px;\">(' + val + unit + ')</span>';";
-    p += "ctx.beginPath(); ctx.strokeStyle='rgba(255,255,255,0.1)'; ctx.lineWidth=1;";
-    p += "ctx.font='10px sans-serif'; ctx.textAlign='right'; ctx.fillStyle='rgba(255,255,255,0.5)';";
-    p += "for(var i=0; i<=5; i++){ var y = pT + dH - (dH*i/5); var v = Math.round(max*i/5); ctx.moveTo(pL, y); ctx.lineTo(W-pR, y); ctx.fillText(v, pL-5, y+3); } ctx.stroke();";
-    p += "if(data.length<2) return;";
-    p += "ctx.beginPath(); for(var i=0; i<data.length; i++){ var x = pL + (i/(maxLen-1))*dW; var dv = data[i]; if(dv>max) dv=max; if(dv<0) dv=0; var y = pT + dH - (dv/max)*dH; if(i==0) ctx.moveTo(x,y); else ctx.lineTo(x,y); }";
-    p += "ctx.save(); var gr = ctx.createLinearGradient(0, pT, 0, pT+dH); gr.addColorStop(0, color); gr.addColorStop(1, 'rgba(0,0,0,0)');";
-    p += "ctx.strokeStyle=color; ctx.lineWidth=2; ctx.stroke();";
-    p += "ctx.lineTo(pL+((data.length-1)/(maxLen-1))*dW, pT+dH); ctx.lineTo(pL, pT+dH); ctx.fillStyle=gr; ctx.globalAlpha=0.3; ctx.fill(); ctx.restore(); }";
+    p += "function drawChart(ctx,can,data,color,max,id,name,unit,val,shId){";
+    p += "can.width=can.offsetWidth; can.height=can.offsetHeight; var W=can.width, H=can.height, pL=40, pR=10, pT=20, pB=25; var dW=W-pL-pR, dH=H-pT-pB; ctx.clearRect(0,0,W,H);";
+    p += "if(id) document.getElementById(id).innerHTML=name + '<span style=\"color:'+color+'; margin-left:8px; opacity:0.8;\">'+val+unit+'</span>';";
+    p += "ctx.beginPath(); ctx.strokeStyle='rgba(255,255,255,0.1)'; ctx.lineWidth=1; ctx.font='10px Outfit'; ctx.textAlign='right'; ctx.fillStyle='rgba(255,255,255,0.4)';";
+    p += "for(var i=0;i<=4;i++){ var y=pT+dH-(dH*i/4); ctx.moveTo(pL,y); ctx.lineTo(W-pR,y); ctx.fillText(Math.round(max*i/4),pL-10,y+4); } ctx.stroke();";
+    p += "if(data.length<2) return; ctx.beginPath(); for(var i=0;i<data.length;i++){ var x=pL+(i/(maxLen-1))*dW; var dv=data[i]>max?max:data[i]; var y=pT+dH-(dv/max)*dH; i==0?ctx.moveTo(x,y):ctx.lineTo(x,y); }";
+    p += "ctx.save(); var gr=ctx.createLinearGradient(0,pT,0,H); gr.addColorStop(0,color); gr.addColorStop(1,'transparent'); ctx.strokeStyle=color; ctx.lineWidth=3; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.stroke();";
+    p += "ctx.lineTo(pL+((data.length-1)/(maxLen-1))*dW, pT+dH); ctx.lineTo(pL, pT+dH); ctx.fillStyle=gr; ctx.globalAlpha=0.15; ctx.fill(); ctx.restore();";
+    p += "if(shId){ var vE=document.getElementById(shId); vE.innerText=val; if(val>0) document.getElementById('dot_'+shId.split('_')[1]).classList.add('status-active'); } }";
 
-    // Polling Logic / Get Current Data
     p += "async function updateData(){ try{";
-    p += "var resD=await fetch('/data'); var d=await resD.json();";
-    p += "var resF=await fetch('/fft'); var fftD=await resF.json();";
-    p += "document.getElementById('st1').innerHTML='SHT: '+(d.c1? (d.temp.toFixed(1)+'&deg;C / '+d.humi.toFixed(1)+'%') : 'Err'); document.getElementById('st1').style.color=d.c1?'#0f8':'#f44';";
-    p += "document.getElementById('st2').innerHTML='BH: '+(d.c2? (d.lux.toFixed(1)+' lx') : 'Err'); document.getElementById('st2').style.color=d.c2?'#0f8':'#f44';";
-    p += "document.getElementById('st3').innerHTML='SGP: '+(d.c3? ('VOC: '+d.voc) : 'Err'); document.getElementById('st3').style.color=d.c3?'#0f8':'#f44';";
-    p += "sD.t.push(d.temp); sD.h.push(d.humi); sD.l.push(d.lux); sD.v.push(d.voc); if(sD.t.length>maxLen){['t','h','l','v'].forEach(k=>sD[k].shift());}";
-    p += "drawFFT(fftD);";
-    p += "drawChart(tCtx,tC,sD.t,'#ff4444',50,'h_t','Temperature','&deg;C',d.temp.toFixed(1));";
-    p += "drawChart(hCtx,hC,sD.h,'#4444ff',100,'h_h','Humidity','%',d.humi.toFixed(1));";
-    p += "drawChart(lCtx,lC,sD.l,'#ffaa00',1000,'h_l','Light',' lx',d.lux.toFixed(0));";
-    p += "drawChart(vCtx,vC,sD.v,'#00ff88',65535,'h_v','VOC','',d.voc);";
+    p += "var [d, f, s]=await Promise.all([fetch('/data').then(r=>r.json()), fetch('/fft').then(r=>r.json()), fetch('/sys').then(r=>r.json())]);";
+    p += "document.getElementById('st_bh').innerText='BH1750: '+(d.c2?'ONLINE':'OFFLINE'); document.getElementById('st_bh').style.color=d.c2?'#0f8':'#f44';";
+    p += "document.getElementById('st_sgp').innerText='SGP41: '+(d.c3?'ONLINE':'OFFLINE'); document.getElementById('st_sgp').style.color=d.c3?'#0f8':'#f44';";
+    p += "document.getElementById('cur_mode').innerText=s.m==1?'Access Point':'Client (STA)';";
+    p += "document.getElementById('cur_ip').innerText=s.ip; document.getElementById('cur_ssid').innerText=s.ss;";
+    p += "sD.t.push(d.temp); sD.h.push(d.humi); sD.v.push(d.voc); sD.n.push(d.nox); sD.l.push(d.lux); if(sD.t.length>maxLen){['t','h','v','n','l'].forEach(k=>sD[k].shift());}";
+    p += "drawFFT(f);";
+    p += "drawChart(tCtx,tC,sD.t,'#ff4466',60,'t_t','Temperature','&deg;C',d.temp.toFixed(1),'h_temp');";
+    p += "drawChart(hCtx,hC,sD.h,'#44aaff',100,'t_h','Humidity','%',d.humi.toFixed(1),'h_humi');";
+    p += "drawChart(vCtx,vC,sD.v,'#00ffaa',500,'t_v','VOC Index','',d.voc,'h_voc');";
+    p += "drawChart(nCtx,nC,sD.n,'#ffaa00',500,'t_n','NOx Index','',d.nox,'h_nox');";
+    p += "drawChart(lCtx,lC,sD.l,'#ffff00',1000,'t_l','Light Level','lx',d.lux.toFixed(0),'h_lux');";
     p += "} catch(e){ console.error(e); } }";
-    p += "setInterval(updateData, 1000); updateData();";
-    
-    p += "function saveWiFi(){ location.href='/set_wifi?ssid='+document.getElementById('ws').value+'&pass='+document.getElementById('wp').value; }";
+    p += "setInterval(updateData,1000); updateData();";
+    p += "function saveWiFi(){ location.href='/set_wifi?m='+document.getElementById('wm').value+'&s='+document.getElementById('ws').value+'&p='+document.getElementById('wp').value; }";
     p += "function saveServo(){ fetch('/set_servo?s='+document.getElementById('ss').value+'&e='+document.getElementById('se').value+'&d='+document.getElementById('sd').value).then(()=>alert('Updated')); }";
     p += "function triggerServo(){ fetch('/trigger'); }</script></body></html>";
     return p;
@@ -306,15 +340,15 @@ void initSensors() {
         Serial.println(" - BH1750 OK");
     }
 
-    gData.hasSHT = checkI2CConnection(0x44);
+    gData.hasSHT = checkI2CConnection(0x44) || checkI2CConnection(0x45);
     if (gData.hasSHT) {
-        sht4x.begin(Wire, 0x44);
+        uint8_t addr = checkI2CConnection(0x44) ? 0x44 : 0x45;
+        sht4x.begin(Wire, addr);
         sht4x.softReset(); // 센서 내부 상태 초기화
         delay(100);
-        Serial.println(" - SHT4x OK");
+        Serial.printf(" - SHT4x OK (at 0x%02X)\n", addr);
     }
 
-    gData.hasSGP = checkI2CConnection(0x59);
     if (gData.hasSGP) {
         sgp41.begin(Wire);
         Serial.println(" - SGP41 OK");
@@ -340,55 +374,61 @@ void setupTimers() {
 }
 
 /**
- * @brief Wi-Fi 연결 및 AP 모드 폴백
+ * @brief Wi-Fi 연결 및 AP 모드 설정
  */
 void setupNetwork() {
-    Serial.println("\n--- WiFi Connection ---");
+    Serial.println("\n--- WiFi Configuration ---");
     
-    // 1. 시도할 정보 결정 (EEPROM 정보가 없으면 Config의 기본 TARGET 정보 사용)
-    String ssidToTry = (stSSID.length() > 0) ? stSSID : Config::TARGET_SSID;
-    String passToTry = (stSSID.length() > 0) ? stPW : Config::TARGET_PASS;
-
-    // 네트워크 리셋
+    // 1. 모드에 따른 초기화
     WiFi.disconnect(true);
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_OFF);
     delay(500); 
 
-    // 2. Station 모드로 접속 시도
-    Serial.printf("Connecting to Network: %s\n", ssidToTry.c_str());
-    WiFi.mode(WIFI_STA); 
-    WiFi.setAutoReconnect(true); // 연결 끊김 시 자동 재접속 활성화
-    delay(200);
-    WiFi.begin(ssidToTry.c_str(), passToTry.c_str());
-    
-    unsigned long startTime = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - startTime < Config::WIFI_CONNECT_TIMEOUT_MS) {
-        delay(500);
-        Serial.print(".");
-    }
-
-    // 3. 접속 실패 시 자체 Recovery AP 모드 전환
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("\n[!] Connection Failed. Starting Recovery AP Mode...");
-        WiFi.mode(WIFI_OFF);
-        delay(300);
+    if (wifiMode == 1) { // AP MODE
+        Serial.println("Starting in AP Mode...");
+        WiFi.mode(WIFI_AP);
         
-        WiFi.mode(WIFI_AP); // 안전하게 순수 AP 모드로 전환
-        delay(200);
+        // AP IP 설정: 192.168.1.1
+        IPAddress local_IP(192, 168, 1, 1);
+        IPAddress gateway(192, 168, 1, 1);
+        IPAddress subnet(255, 255, 255, 0);
+        WiFi.softAPConfig(local_IP, gateway, subnet);
         
-        bool apResult = WiFi.softAP(Config::HUB_AP_SSID, Config::HUB_AP_PASS);
-        delay(500); 
+        String ssid = (apSSID.length() > 0) ? apSSID : Config::HUB_AP_SSID;
+        String pass = (apSSID.length() > 0) ? apPW : Config::HUB_AP_PASS;
         
-        if (apResult) {
-            Serial.printf("Recovery AP Started: %s\n", Config::HUB_AP_SSID);
-            Serial.print("Access Dashboard IP: "); Serial.println(WiFi.softAPIP());
+        if (WiFi.softAP(ssid.c_str(), pass.c_str())) {
+            Serial.printf("AP Started: %s\n", ssid.c_str());
+            Serial.print("IP Address: "); Serial.println(WiFi.softAPIP());
         } else {
-            Serial.println("Error: Failed to start AP.");
+            Serial.println("AP Failed. Falling back to recovery...");
+            WiFi.softAP(Config::HUB_AP_SSID, Config::HUB_AP_PASS);
         }
-    } else {
-        Serial.println("\n[OK] WiFi Connected Successfully!");
-        Serial.print("Dashboard IP: "); Serial.println(WiFi.localIP());
+    } else { // STA MODE
+        String ssidToTry = (stSSID.length() > 0) ? stSSID : Config::TARGET_SSID;
+        String passToTry = (stSSID.length() > 0) ? stPW : Config::TARGET_PASS;
+
+        Serial.printf("Connecting to Network: %s\n", ssidToTry.c_str());
+        WiFi.mode(WIFI_STA); 
+        WiFi.setAutoReconnect(true);
+        WiFi.begin(ssidToTry.c_str(), passToTry.c_str());
+        
+        unsigned long startTime = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - startTime < Config::WIFI_CONNECT_TIMEOUT_MS) {
+            delay(500);
+            Serial.print(".");
+        }
+
+        if (WiFi.status() != WL_CONNECTED) {
+            Serial.println("\n[!] Connection Failed. Switching to Recovery AP...");
+            WiFi.mode(WIFI_AP);
+            WiFi.softAP(Config::HUB_AP_SSID, Config::HUB_AP_PASS);
+            Serial.print("Recovery IP: "); Serial.println(WiFi.softAPIP());
+        } else {
+            Serial.println("\n[OK] Connected Successfully!");
+            Serial.print("Local IP: "); Serial.println(WiFi.localIP());
+        }
     }
 }
 
@@ -407,12 +447,14 @@ void setupWebServer() {
         payload.reserve(1024);
         payload = "{\"temp\":" + String(gData.temp, 1) + 
                   ",\"humi\":" + String(gData.humi, 1) + 
-                  ",\"lux\":" + String(gData.lux,1) + 
+                  ",\"lux\":" + String(gData.lux, 1) + 
                   ",\"voc\":" + String(gData.voc) + 
-                  ",\"c1\":" + String(gData.hasSHT) + 
+                  ",\"nox\":" + String(gData.nox) + 
+                  ",\"sraw_voc\":" + String(gData.srawVoc) + 
+                  ",\"sraw_nox\":" + String(gData.srawNox) + 
                   ",\"c2\":" + String(gData.hasBH) + 
                   ",\"c3\":" + String(gData.hasSGP) + 
-                  "}"; // FFT data removed from here
+                  "}";
         
         AsyncWebServerResponse *response = req->beginResponse(200, "application/json", payload);
         response->addHeader("Cache-Control", "no-cache, no-store, must-revalidate");
@@ -430,12 +472,31 @@ void setupWebServer() {
         req->send(response);
     });
 
+    server.on("/sys", HTTP_GET, [](AsyncWebServerRequest *req){
+        String ip = (WiFi.getMode() & WIFI_MODE_STA) ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
+        String curSSID = (WiFi.getMode() & WIFI_MODE_STA) ? WiFi.SSID() : apSSID;
+        String payload = "{\"m\":" + String(wifiMode) + ",\"ip\":\"" + ip + "\",\"ss\":\"" + curSSID + "\"}";
+        req->send(200, "application/json", payload);
+    });
+
     server.on("/set_wifi", HTTP_GET, [](AsyncWebServerRequest *req){
-        if (req->hasParam("ssid")) writeEEPROMString(12, req->getParam("ssid")->value());
-        if (req->hasParam("pass")) writeEEPROMString(44, req->getParam("pass")->value());
+        if (req->hasParam("m")) {
+            wifiMode = req->getParam("m")->value().toInt();
+            EEPROM.write(11, (uint8_t)wifiMode);
+        }
+        if (req->hasParam("s")) {
+            String s = req->getParam("s")->value();
+            if (wifiMode == 1) { apSSID = s; writeEEPROMString(100, s); }
+            else { stSSID = s; writeEEPROMString(12, s); }
+        }
+        if (req->hasParam("p")) {
+            String p = req->getParam("p")->value();
+            if (wifiMode == 1) { apPW = p; writeEEPROMString(164, p); }
+            else { stPW = p; writeEEPROMString(44, p); }
+        }
         EEPROM.commit();
-        req->send(200, "text/html", "Restarting in 2s...");
-        delay(2000); ESP.restart();
+        req->send(200, "text/html", "Settings saved. Restarting...");
+        delay(1000); ESP.restart();
     });
 
     server.on("/set_servo", HTTP_GET, [](AsyncWebServerRequest *req){
@@ -456,22 +517,41 @@ void setupWebServer() {
 }
 
 /**
- * @brief FFT 연산 및 JSON 직렬화
+ * @brief FFT 연산 및 JSON 직렬화 (안정화 적용)
  */
 void processFFTLogic() {
+    // 1. DC Offset 제거 (평균값 차감)
+    double sum = 0;
+    for (int i = 0; i < Config::FFT_SAMPLES; i++) sum += vReal[i];
+    double mean = sum / Config::FFT_SAMPLES;
+    for (int i = 0; i < Config::FFT_SAMPLES; i++) vReal[i] -= mean;
+
+    // 2. FFT 수행
     FFT.windowing(FFT_WIN_TYP_HAMMING, FFT_FORWARD);
     FFT.compute(FFT_FORWARD);
     FFT.complexToMagnitude();
 
-    // 32개 밴드로 압축하여 전송량 최적화
+    // 3. 32개 밴드로 압축 및 노이즈 필터링
+    static float smoothedBins[32] = {0};
+    float alpha = 0.2f; // FFT 평활화 강도 (낮을수록 더 안정적)
+
     String json = "[";
     int samplesPerBin = Config::FFT_SAMPLES / 2 / 32;
     for (int i = 0; i < 32; i++) {
         double magSum = 0;
         for (int j = 0; j < samplesPerBin; j++) {
-            magSum += vReal[i * samplesPerBin + j + 2]; // DC 성분 제외
+            magSum += vReal[i * samplesPerBin + j + 2]; // DC성분 제외하고 합산
         }
-        json += "{\"freq\":" + String((int)(i * (Config::SAMPLING_FREQ / 2 / 32))) + ",\"mag\":" + String(magSum / samplesPerBin, 1) + "}";
+        float currentMag = (float)(magSum / samplesPerBin);
+        
+        // 지수 평활화 적용 (Fluctuation 억제)
+        smoothedBins[i] = applyFilter(currentMag, smoothedBins[i], alpha);
+        
+        // 미세 노이즈 컷오프 (Floor 정돈)
+        float finalMag = smoothedBins[i];
+        if (finalMag < 5.0f) finalMag = 0.0f; 
+
+        json += "{\"freq\":" + String((int)(i * (Config::SAMPLING_FREQ / 2 / 32))) + ",\"mag\":" + String(finalMag, 1) + "}";
         if (i < 31) json += ",";
     }
     json += "]";
@@ -483,37 +563,38 @@ void processFFTLogic() {
     isBufferFull = false;
 }
 
-/**
- * @brief 센서 데이터 읽기 및 전역 변수 업데이트
- * Sensirion 에러(270) 최소화를 위해 업데이트 주기를 분산하고 안전 장치 마련
- */
 void updateSensorData() {
     static uint32_t shtTick = 0;
     static uint32_t sgpTick = 0;
     static int consecutiveErrors = 0;
 
-    // 1. SHT4x (온습도) - 안정성을 위해 2초 마다 측정
+    // 1. SHT4x (온습도)
     if (gData.hasSHT && (millis() - shtTick >= 2000)) {
         shtTick = millis();
         uint16_t error = sht4x.measureHighPrecision(gData.temp, gData.humi);
-        if (error) {
-            consecutiveErrors++;
-            if (consecutiveErrors % 5 == 0) Serial.printf("[SHT] I2C Status: %u\n", error);
-        } else {
+        if (!error) {
             consecutiveErrors = 0;
+        } else {
+            consecutiveErrors++;
         }
     }
     
-    // 2. SGP41 (공기질) - 리소스 보호를 위해 1초 주기로 측정
+    // 2. SGP41 (공기질)
     if (gData.hasSGP && (millis() - sgpTick >= 1000)) {
         sgpTick = millis();
-        sgp41.measureRawSignals(gData.humi, gData.temp, gData.voc, gData.nox);
+        float compT = gData.hasSHT ? gData.temp : 25.0;
+        float compH = gData.hasSHT ? gData.humi : 50.0;
+        
+        sgp41.measureRawSignals(compH, compT, gData.srawVoc, gData.srawNox);
+        
+        if (gData.srawVoc > 0) gData.voc = voc_algorithm.process(gData.srawVoc);
+        if (gData.srawNox > 0) gData.nox = nox_algorithm.process(gData.srawNox);
     }
     
-    // 3. BH1750 (조도) - 100ms 마다 업데이트
+    // 3. BH1750 (조도)
     if (gData.hasBH) {
-        float l = lightMeter.readLightLevel();
-        if (l >= 0) gData.lux = l;
+        float rawL = lightMeter.readLightLevel();
+        if (rawL >= 0) gData.lux = rawL;
     }
 
     // 버스 잠김 의심 시 자동 복구 (에러 지속 시)
@@ -525,15 +606,20 @@ void updateSensorData() {
 
     // 4. (추가) 센서 재연결 시도 (10초마다)
     static uint32_t retryTick = 0;
-    if ((!gData.hasSHT || !gData.hasSGP) && (millis() - retryTick >= 10000)) {
+    if ((!gData.hasSGP || !gData.hasSHT) && (millis() - retryTick >= 10000)) {
         retryTick = millis();
-        if (!gData.hasSHT) {
-            gData.hasSHT = checkI2CConnection(0x44);
-            if(gData.hasSHT) { sht4x.begin(Wire, 0x44); sht4x.softReset(); Serial.println("[sys] SHT4x Reconnected!"); }
-        }
         if (!gData.hasSGP) {
             gData.hasSGP = checkI2CConnection(0x59);
             if(gData.hasSGP) { sgp41.begin(Wire); Serial.println("[sys] SGP41 Reconnected!"); }
+        }
+        if (!gData.hasSHT) {
+            uint8_t addr = checkI2CConnection(0x44) ? 0x44 : (checkI2CConnection(0x45) ? 0x45 : 0);
+            if (addr > 0) {
+                gData.hasSHT = true;
+                sht4x.begin(Wire, addr);
+                sht4x.softReset(); 
+                Serial.printf("[sys] SHT4x Reconnected (at 0x%02X)!\n", addr); 
+            }
         }
     }
 
@@ -545,7 +631,7 @@ void updateSensorData() {
  */
 void testSHT4x() {
     Serial.print("\n[Test] SHT4x (Temp/Humi): ");
-    if (!gData.hasSHT) { Serial.println("NOT FOUND"); return; }
+    if (!gData.hasSHT) { Serial.println("NOT FOUND (Skipping test to prevent crash)"); return; }
     
     float t, h;
     uint16_t err = sht4x.measureHighPrecision(t, h);
@@ -572,12 +658,23 @@ void testSGP41() {
     Serial.print("[Test] SGP41 (Air Quality): ");
     if (!gData.hasSGP) { Serial.println("NOT FOUND"); return; }
     
-    uint16_t voc, nox;
-    uint16_t err = sgp41.measureRawSignals(50.0f, 25.0f, voc, nox); // 임시 보정값 사용
+    uint16_t srawVoc = 0, srawNox = 0;
+    float currentT = gData.hasSHT ? gData.temp : 25.0;
+    float currentRH = gData.hasSHT ? gData.humi : 50.0;
+
+    // Measure Raw Signals with compensation
+    uint16_t err = sgp41.measureRawSignals(currentRH, currentT, srawVoc, srawNox);
+    // currentT = (gData.temp == 0 && gData.humi == 0) ? 25.0 : gData.temp;
+    // currentRH = (gData.temp == 0 && gData.humi == 0) ? 50.0 : gData.humi;
+
     if (err) {
         Serial.printf("FAILED (Error code: %u)\n", err);
     } else {
-        Serial.printf("OK! -> VOC Raw: %u, NOX Raw: %u\n", voc, nox);
+        Serial.println("OK!");
+        Serial.printf("    > Environment: T=%.1fC, RH=%.1f%%\n", currentT, currentRH);
+        Serial.printf("    > SRAW_VOC: %u (Raw Ticks)\n", srawVoc);
+        Serial.printf("    > SRAW_NOX: %u (Raw Ticks)\n", srawNox);
+        Serial.printf("    > Current Index (Periodic): VOC Algorithm=%u, NOx Algorithm=%u\n", gData.voc, gData.nox);
     }
 }
 
@@ -649,8 +746,13 @@ void processingTask(void *pvParameters) {
             lastPulse = millis();
             
              // 시리얼 모니터 가독성을 위해 상세 로그 출력
-            Serial.printf("[Info] Sensor Updated %s| Temp: %.1fC, Humi: %.1f%%, Lux: %.1f, VOC: %u\n", 
-                          WiFi.localIP().toString().c_str(), gData.temp, gData.humi, gData.lux, gData.voc);
+            if (millis() < 60000) {
+                Serial.printf("[Info] Sensor Updated %s| Temp: %.1fC, Humi: %.1f%%, Lux: %.1f, VOC Index: %u (Warmup), NOx Index: %u (Warmup)\n", 
+                              WiFi.localIP().toString().c_str(), gData.temp, gData.humi, gData.lux, gData.voc, gData.nox);
+            } else {
+                Serial.printf("[Info] Sensor Updated %s| Temp: %.1fC, Humi: %.1f%%, Lux: %.1f, VOC Index: %u, NOx Index: %u\n", 
+                              WiFi.localIP().toString().c_str(), gData.temp, gData.humi, gData.lux, gData.voc, gData.nox);
+            }
         }
 
         if (servoTriggered) {
@@ -678,12 +780,13 @@ void setup() {
     // Mutex 초기화
     fftMutex = xSemaphoreCreateMutex();
 
-    // EEPROM 설정 로드
-    servoStart = EEPROM.readInt(0);
-    servoEnd = EEPROM.readInt(4);
-    motionDelay = EEPROM.readInt(8);
+    wifiMode = EEPROM.read(11);
+    if (wifiMode > 1) wifiMode = 0; // Default to STA
+
     stSSID = readEEPROMString(12);
     stPW = readEEPROMString(44);
+    apSSID = readEEPROMString(100);
+    apPW = readEEPROMString(164);
 
     // 기본값 설정 (EEPROM이 비었을 경우)
     if (servoStart < 500 || servoStart > 2500) { 
