@@ -1,93 +1,77 @@
-# ESP32-S3 Premium Sensor Hub (V5.1)
+# DATA CENTER ENVIRONMENT MONITORING SENSOR HUB (V7.4)
 
-ESP32-S3와 다양한 환경 센서를 활용한 프리미엄 데이터 수집 및 시각화 시스템입니다.
-A premium data acquisition and visualization system using ESP32-S3 and various environmental sensors.
+[한국어 버전 (Korean Version)](./README_KR.md)
 
----
-
-## 주요 기능 (Key Features)
-
-### 1. 실시간 데이터 시각화 (Real-time Visualization)
-- **Glassmorphism Dashboard**: 현대적인 다크 테마 웹 UI 제공 (Modern dark-themed UI).
-- **Split Graphs**: 온도, 습도, 조도, VOC 데이터를 4개의 개별 차트로 분리하여 가독성 극대화 (4 separate charts for Temp, Humi, Lux, and VOC).
-- **FFT Spectrum**: 8kHz 샘플링을 통한 실시간 사운드 주파수 분석 (Real-time sound frequency analysis with 8kHz sampling).
-
-### 2. 고성능 아키텍처 (High-Performance Architecture)
-- **Dual-Core Optimization**: 네트워킹(Core 0)과 연산/센싱(Core 1)의 역할 분리 (Separation of tasks between networking and computation).
-- **Precision Timers**: 하드웨어 타이머를 이용한 정밀 사운드 샘플링 및 센서 데이터 수집 (Precise sampling and sensing using hardware timers).
+A professional-grade monitoring system designed for the rigorous demands of data center and server room environments. Combining the ESP32-S3 with precision environmental sensors, this hub provides high-fidelity data acquisition and real-time visualization.
 
 ---
 
-## API 및 데이터 확인 (API & Data Access)
+## 🚀 Key Features & Innovations (Version 7.4)
 
-브라우저 외에 `curl`을 통해 JSON 데이터를 직접 가져올 수 있습니다.
-You can retrieve JSON data directly via `curl` in addition to the web dashboard.
+### 1. Ultra-Premium Glassmorphism UI
+*   **Elegant Aesthetics**: A high-fidelity dashboard with glass textures, leveraging modern design trends.
+*   **Dynamic Backdrop**: An animated mesh gradient provides a living visual status of the environment.
+*   **Hero Metrics**: Dedicated visual cards for critical indicators: VOC, NOx, Temperature, Humidity, and Light (Lux).
+*   **Fluid Visuals**: Real-time trend charts powered by `Chart.js` for seamless data storytelling.
 
-### JSON 데이터 요청 (Get Snapshot)
-```bash
-curl -s http://<ESP32_IP>/data | jq .
-```
-- **Response**: `{"temp": 25.4, "humi": 45.2, "lux": 150.0, "voc": 120, "fft": [...]}`
+### 2. Advanced Data Stabilization Engine
+*   **FFT DC Offset Removal**: Dynamically calculates and subtracts the DC bias from raw audio signals to ensure a zeroed FFT baseline.
+*   **Per-Bin Smoothing (EMA)**: Applies independent Exponential Moving Averages to all frequency bins, suppressing transient flickering and noise.
+*   **Noise Floor Cutoff**: A software-defined threshold ensures a perfectly clean, silent state in calm environments.
 
-### 서보 모터 제어 (Actuator Control)
-```bash
-curl -s http://<ESP32_IP>/trigger
-```
-
----
-
-## 주요 함수 코드 요약 (Core Function Details)
-
-| 함수명 (Function) | 설명 (Korean Description) | Description (English) |
-| :--- | :--- | :--- |
-| `buildHtmlPage()` | 대시보드 HTML/JS 생성 및 폴링 로직 구현 | Generates UI & implements JSON polling. |
-| `processFFTLogic()` | FFT 연산 및 32밴드 데이터 압축 | Handles FFT computation & data optimization. |
-| `updateSensorData()` | SHT4x, SGP41, BH1750 데이터 갱신 | Updates all environmental sensor values. |
-| `setupWebServer()` | JSON API 및 제어 엔드포인트 설정 | Configures API and control routes. |
-| `processingTask()` | Core 1에서 실행되는 핵심 워커 태스크 | Main worker task running on Core 1. |
+### 3. Hardware Robustness & Logic
+*   **Precision SHT4x Integration**: Automatic I2C multi-address scanning (0x44/0x45) coupled with data-center grade T/H accuracy.
+*   **SGP41 Environmental Compensation**: SHT4x data is fed directly into the SGP41 algorithm in real-time for highly accurate gas indexing.
+*   **Fault Tolerance**: Built-in protection against sensor disconnection, preventing "Guru Meditation Errors" and automatically switching to fallback data modes.
 
 ---
 
-## 하드웨어 구성 (Hardware Configuration)
+## 🛠 Hardware Configuration
 
-- **Controller**: Seeed Studio XIAO ESP32-S3
-- **Sensors**: 
-  - SHT4x (Temp/Humidity)
-  - SGP41 (Air Quality/VOC)
-  - BH1750 (Light/Lux)
-  - Analog Sound Sensor (GPIO 1)
-- **Actuator**: Servo Motor (GPIO 2)
-
----
-
-## 사용자 설정 (Configuration)
-
-`ESP32-sensor.ino` 상단의 `namespace Config` 영역에서 다음 항목을 수정할 수 있습니다:
-You can modify these settings in the `namespace Config` section of `ESP32-sensor.ino`:
-
-- `TARGET_SSID / TARGET_PASS`: WiFi 자격 증명 (WiFi Credentials).
-- `SAMPLING_FREQ`: 사운드 샘플링 주파수 (Sound sampling frequency).
-- `PIN_I2C_SDA / SCL`: I2C 핀 번호 (I2C pin assignments).
+*   **Controller**: Seeed Studio XIAO ESP32-S3 (Dual-Core Performance)
+*   **Sensors**:
+    *   **SHT4x**: High-precision Temperature (±0.2°C) and Humidity (±1.8% RH).
+    *   **SGP41**: Volatile Organic Compounds (VOC) and Nitrogen Oxides (NOx) sensing.
+    *   **BH1750**: Digital Light Sensor (1 to 65535 lx range).
+    *   **MEMS Microphone**: Focused on real-time noise and frequency analysis (8kHz sampling).
+*   **Actuators**: Integrated PWM Servo Motor for external system control.
 
 ---
 
-## 시스템 구동 화면 (System Previews)
+## 💻 Technical Architecture
 
-### 1. 웹 대시보드 (Web Dashboard)
-프리미엄 글래스모피즘 UI가 적용된 실시간 센서 및 FFT 분석 화면입니다.
-The real-time sensor and FFT analysis interface with premium glassmorphism UI.
+*   **Dual-Core Task Separation**:
+    *   **Core 0 (Communication)**: Manages Wi-Fi, the asynchronous web server, and the JSON API.
+    *   **Core 1 (Processing)**: Dedicated to hardware-timer sampling, FFT computation, and sensor polling.
+*   **Data Integrity**: Mutex-protected FFT buffers ensure thread safety between ISR sampling and web-requested data serialization.
 
-````carousel
-![Dashboard Overview 1](/home/kiie/.gemini/antigravity/brain/e9adf6a2-9134-459c-9db6-58a2aa65c6d1/uploaded_image_2_1768961649583.png)
-<!-- slide -->
-![Dashboard Overview 2](/home/kiie/.gemini/antigravity/brain/e9adf6a2-9134-459c-9db6-58a2aa65c6d1/uploaded_image_3_1768961649583.png)
-<!-- slide -->
-![Dashboard Data Trend](/home/kiie/.gemini/antigravity/brain/e9adf6a2-9134-459c-9db6-58a2aa65c6d1/uploaded_image_4_1768961649583.png)
-````
+---
 
-### 2. 시리얼 모니터 및 로그 (Serial Monitor & Logs)
-시스템 진단 및 실시간 데이터 업데이트 로그입니다.
-System diagnostics and real-time data update logs.
+## 🖼 System Previews
 
-![Sensor Update Logs 1](/home/kiie/.gemini/antigravity/brain/e9adf6a2-9134-459c-9db6-58a2aa65c6d1/uploaded_image_0_1768961649583.png)
-![System Diagnostic Logs](/home/kiie/.gemini/antigravity/brain/e9adf6a2-9134-459c-9db6-58a2aa65c6d1/uploaded_image_1_1768961649583.png)
+### 1. Software: Real-time Dashboard
+![Dashboard V7.4 Preview](images/dashboard_v7_4.png)
+
+### 2. Hardware: Design & Schematics
+| Asset | Preview |
+| :--- | :--- |
+| **Circuit Diagram** | ![Circuit Diagram](images/circuit%20diagram.png) |
+| **PCB Layout** | ![PCB Layout](images/pcb.png) |
+| **3D Rendering** | ![3D PCB Rendering](images/3DPCB.png) |
+
+---
+
+## 📡 API Reference
+
+*   **Telemetry Snapshot**: `GET /data` - Returns all environment metrics in JSON format.
+*   **Spectral Analysis**: `GET /fft` - Detailed 32-band frequency domain data.
+*   **Actuator Control**: `GET /trigger` - Manual override for the servo motor.
+
+---
+
+## ⚙️ Setup & Configuration
+
+1.  Configure the **ESP32-S3** board in your Arduino IDE environment.
+2.  Input your WiFi credentials in the `namespace Config` block within the `.ino` file.
+3.  Install dependencies: `Sensirion SHT4x`, `Sensirion SGP41`, `BH1750`, and `arduinoFFT`.
+4.  Flash as usual and access the server IP via your browser.
