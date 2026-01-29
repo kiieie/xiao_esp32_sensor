@@ -38,8 +38,10 @@
 namespace Config {
     // --- WiFi 설정 ---
     // 실제 접속할 공유기(AP) 정보 (사용자 컴퓨터와 동일한 네트워크)
-    const char* TARGET_SSID = "DIRECT-ZvC145x Series le";
+    const char* TARGET_SSID = "ASUS";
     const char* TARGET_PASS = "11111111";
+    // const char* TARGET_SSID = "DIRECT-ZvC145x Series le";
+    // const char* TARGET_PASS = "11111111";
     
     // 접속 실패 시 생성할 자체 네트워크 이름 (DHCP 서버 역할)
     const char* HUB_AP_SSID = "S3_SENSOR_HUB_RECOVERY";
@@ -184,6 +186,28 @@ String readEEPROMString(int startAddr) {
     return (result.length() == 0 || (uint8_t)result[0] == 255) ? "" : result;
 }
 
+/**
+ * @brief SoftAP IP 설정 및 시작 헬퍼
+ */
+void startSoftAP(String ssid, String pass) {
+    WiFi.mode(WIFI_AP);
+    IPAddress local_IP(192, 168, 1, 1);
+    IPAddress gateway(192, 168, 1, 1);
+    IPAddress subnet(255, 255, 255, 0);
+    
+    // IP 강제 설정
+    if (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
+        Serial.println("[AP] SoftAP Config Failed!");
+    }
+    
+    if (WiFi.softAP(ssid.c_str(), pass.c_str())) {
+        Serial.printf("AP Started: %s\n", ssid.c_str());
+        Serial.print("IP Address: "); Serial.println(WiFi.softAPIP());
+    } else {
+        Serial.println("AP Failed.");
+    }
+}
+
 // ==========================================
 // [SECTION 5] 시각적 프리미엄 웹 UI (Premium Dashboard)
 // ==========================================
@@ -246,9 +270,17 @@ String buildHtmlPage() {
     p += "<li class='sys-item'><span>Mode</span><b id='cur_mode'>--</b></li>";
     p += "<li class='sys-item'><span>IP</span><b id='cur_ip'>--</b></li>";
     p += "<li class='sys-item'><span>SSID</span><b id='cur_ssid'>--</b></li></div>";
+    
+    // 자바스크립트에 현재 저장된 설정값 전달
+    p += "<script>";
+    p += "var stS='"+stSSID+"', stP='"+stPW+"';";
+    p += "var apS='"+apSSID+"', apP='"+apPW+"';";
+    p += "</script>";
+
     p += "<div class='panel'><h3>Network Mode</h3><select id='wm' onchange='togglePass()'><option value='0'>Client (STA)</option><option value='1'>Hotspot (AP)</option></select>";
-    p += "<input type='text' id='ws' value='"+stSSID+"' placeholder='SSID'><input type='password' id='wp' value='"+stPW+"' placeholder='Password'>";
-    p += "<button onclick='saveWiFi()' class='btn btn-prime'>Apply Network State</button></div></div></div>";
+    p += "<input type='text' id='ws' placeholder='SSID'>";
+    p += "<input type='password' id='wp' placeholder='Password'>";
+    p += "<button onclick='saveWiFi()' class='btn btn-prime'>Apply & Restart</button></div></div></div>";
 
     p += "<div class='sub-grid'>";
     p += "<div class='chart-card'><b id='t_t'>Temperature</b><canvas id='tC'></canvas></div>";
@@ -301,6 +333,14 @@ String buildHtmlPage() {
     p += "drawChart(lCtx,lC,sD.l,'#ffff00',1000,'t_l','Light Level','lx',d.lux.toFixed(0),'h_lux');";
     p += "} catch(e){ console.error(e); } }";
     p += "setInterval(updateData,1000); updateData();";
+    p += "function togglePass(){";
+    p += "  var m = document.getElementById('wm').value;";
+    p += "  if(m=='0'){ document.getElementById('ws').value = stS; document.getElementById('wp').value = stP; }";
+    p += "  else { document.getElementById('ws').value = apS; document.getElementById('wp').value = apP; }";
+    p += "}";
+    // 페이지 로드 시 초기값 설정
+    p += "setTimeout(function(){ document.getElementById('wm').value = '" + String(wifiMode) + "'; togglePass(); }, 100);"; 
+    
     p += "function saveWiFi(){ location.href='/set_wifi?m='+document.getElementById('wm').value+'&s='+document.getElementById('ws').value+'&p='+document.getElementById('wp').value; }";
     p += "function saveServo(){ fetch('/set_servo?s='+document.getElementById('ss').value+'&e='+document.getElementById('se').value+'&d='+document.getElementById('sd').value).then(()=>alert('Updated')); }";
     p += "function triggerServo(){ fetch('/trigger'); }</script></body></html>";
@@ -387,25 +427,13 @@ void setupNetwork() {
 
     if (wifiMode == 1) { // AP MODE
         Serial.println("Starting in AP Mode...");
-        WiFi.mode(WIFI_AP);
-        
-        // AP IP 설정: 192.168.1.1
-        IPAddress local_IP(192, 168, 1, 1);
-        IPAddress gateway(192, 168, 1, 1);
-        IPAddress subnet(255, 255, 255, 0);
-        WiFi.softAPConfig(local_IP, gateway, subnet);
         
         String ssid = (apSSID.length() > 0) ? apSSID : Config::HUB_AP_SSID;
         String pass = (apSSID.length() > 0) ? apPW : Config::HUB_AP_PASS;
         
-        if (WiFi.softAP(ssid.c_str(), pass.c_str())) {
-            Serial.printf("AP Started: %s\n", ssid.c_str());
-            Serial.print("IP Address: "); Serial.println(WiFi.softAPIP());
-        } else {
-            Serial.println("AP Failed. Falling back to recovery...");
-            WiFi.softAP(Config::HUB_AP_SSID, Config::HUB_AP_PASS);
-        }
+        startSoftAP(ssid, pass);
     } else { // STA MODE
+
         String ssidToTry = (stSSID.length() > 0) ? stSSID : Config::TARGET_SSID;
         String passToTry = (stSSID.length() > 0) ? stPW : Config::TARGET_PASS;
 
@@ -422,9 +450,7 @@ void setupNetwork() {
 
         if (WiFi.status() != WL_CONNECTED) {
             Serial.println("\n[!] Connection Failed. Switching to Recovery AP...");
-            WiFi.mode(WIFI_AP);
-            WiFi.softAP(Config::HUB_AP_SSID, Config::HUB_AP_PASS);
-            Serial.print("Recovery IP: "); Serial.println(WiFi.softAPIP());
+            startSoftAP(Config::HUB_AP_SSID, Config::HUB_AP_PASS);
         } else {
             Serial.println("\n[OK] Connected Successfully!");
             Serial.print("Local IP: "); Serial.println(WiFi.localIP());
@@ -480,23 +506,29 @@ void setupWebServer() {
     });
 
     server.on("/set_wifi", HTTP_GET, [](AsyncWebServerRequest *req){
+        int newMode = wifiMode;
         if (req->hasParam("m")) {
-            wifiMode = req->getParam("m")->value().toInt();
-            EEPROM.write(11, (uint8_t)wifiMode);
+            newMode = req->getParam("m")->value().toInt();
+            EEPROM.write(11, (uint8_t)newMode);
         }
+
+        // 선택된 모드에 맞는 파라미터 저장
+        // 사용자가 화면에서 입력한 값(s, p)은 선택된 모드(m)에 해당하는 값이라고 가정
         if (req->hasParam("s")) {
             String s = req->getParam("s")->value();
-            if (wifiMode == 1) { apSSID = s; writeEEPROMString(100, s); }
+            if (newMode == 1) { apSSID = s; writeEEPROMString(100, s); }
             else { stSSID = s; writeEEPROMString(12, s); }
         }
         if (req->hasParam("p")) {
             String p = req->getParam("p")->value();
-            if (wifiMode == 1) { apPW = p; writeEEPROMString(164, p); }
+            if (newMode == 1) { apPW = p; writeEEPROMString(164, p); }
             else { stPW = p; writeEEPROMString(44, p); }
         }
         EEPROM.commit();
-        req->send(200, "text/html", "Settings saved. Restarting...");
-        delay(1000); ESP.restart();
+        
+        req->send(200, "text/html", "Settings saved. Restarting to apply...");
+        delay(1000); 
+        ESP.restart();
     });
 
     server.on("/set_servo", HTTP_GET, [](AsyncWebServerRequest *req){
