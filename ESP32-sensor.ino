@@ -26,7 +26,7 @@
 #include <BH1750.h>
 #include <arduinoFFT.h>
 #include <ESP32Servo.h>
-#include <arduinoFFT.h>
+#include <arduinoFFT넵.h>
 #include <ESP32Servo.h>
 #include <EEPROM.h>
 #include <VOCGasIndexAlgorithm.h>
@@ -97,7 +97,7 @@ volatile bool timerSensorFlag = false;
 volatile bool servoTriggered = false;
 int servoStart, servoEnd, motionDelay;
 String stSSID, stPW, fftJsonData = "[]";
-String apSSID, apPW;
+String apSSID, apPW, localIP;
 int wifiMode = 0; // 0: Client, 1: AP
 SemaphoreHandle_t fftMutex; // Mutex for thread-safe FFT data access
 
@@ -432,6 +432,7 @@ void setupNetwork() {
         String pass = (apSSID.length() > 0) ? apPW : Config::HUB_AP_PASS;
         
         startSoftAP(ssid, pass);
+        localIP="192.168.1.1";
     } else { // STA MODE
 
         String ssidToTry = (stSSID.length() > 0) ? stSSID : Config::TARGET_SSID;
@@ -454,6 +455,7 @@ void setupNetwork() {
         } else {
             Serial.println("\n[OK] Connected Successfully!");
             Serial.print("Local IP: "); Serial.println(WiFi.localIP());
+            localIP=WiFi.localIP().toString();
         }
     }
 }
@@ -552,11 +554,19 @@ void setupWebServer() {
  * @brief FFT 연산 및 JSON 직렬화 (안정화 적용)
  */
 void processFFTLogic() {
-    // 1. DC Offset 제거 (평균값 차감)
-    double sum = 0;
-    for (int i = 0; i < Config::FFT_SAMPLES; i++) sum += vReal[i];
-    double mean = sum / Config::FFT_SAMPLES;
-    for (int i = 0; i < Config::FFT_SAMPLES; i++) vReal[i] -= mean;
+    // 1. 4Hz High-Pass IIR 필터 적용 (DC 및 저주파 노이즈 제거) 및 게인(0.5) 적용
+    static double prevX = 0, prevY = 0;
+    const double hpfAlpha = 0.99687; // 4Hz High-Pass cutoff @ 8kHz sampling rate
+    const double gain = 0.5;
+
+    for (int i = 0; i < Config::FFT_SAMPLES; i++) {
+        double x = vReal[i];
+        double y = hpfAlpha * (prevY + x - prevX);
+        prevX = x;
+        prevY = y;
+        vReal[i] = y * gain;
+    }
+
 
     // 2. FFT 수행
     FFT.windowing(FFT_WIN_TYP_HAMMING, FFT_FORWARD);
@@ -565,7 +575,7 @@ void processFFTLogic() {
 
     // 3. 32개 밴드로 압축 및 노이즈 필터링
     static float smoothedBins[32] = {0};
-    float alpha = 0.2f; // FFT 평활화 강도 (낮을수록 더 안정적)
+    float smoothAlpha = 0.2f; // FFT 평활화 강도 (낮을수록 더 안정적)
 
     String json = "[";
     int samplesPerBin = Config::FFT_SAMPLES / 2 / 32;
@@ -577,7 +587,7 @@ void processFFTLogic() {
         float currentMag = (float)(magSum / samplesPerBin);
         
         // 지수 평활화 적용 (Fluctuation 억제)
-        smoothedBins[i] = applyFilter(currentMag, smoothedBins[i], alpha);
+        smoothedBins[i] = applyFilter(currentMag, smoothedBins[i], smoothAlpha);
         
         // 미세 노이즈 컷오프 (Floor 정돈)
         float finalMag = smoothedBins[i];
@@ -780,10 +790,10 @@ void processingTask(void *pvParameters) {
              // 시리얼 모니터 가독성을 위해 상세 로그 출력
             if (millis() < 60000) {
                 Serial.printf("[Info] Sensor Updated %s| Temp: %.1fC, Humi: %.1f%%, Lux: %.1f, VOC Index: %u (Warmup), NOx Index: %u (Warmup)\n", 
-                              WiFi.localIP().toString().c_str(), gData.temp, gData.humi, gData.lux, gData.voc, gData.nox);
+                              localIP.c_str(), gData.temp, gData.humi, gData.lux, gData.voc, gData.nox);
             } else {
                 Serial.printf("[Info] Sensor Updated %s| Temp: %.1fC, Humi: %.1f%%, Lux: %.1f, VOC Index: %u, NOx Index: %u\n", 
-                              WiFi.localIP().toString().c_str(), gData.temp, gData.humi, gData.lux, gData.voc, gData.nox);
+                              localIP.c_str(), gData.temp, gData.humi, gData.lux, gData.voc, gData.nox);
             }
         }
 
@@ -855,6 +865,13 @@ void loop() {
         char c = Serial.read();
         if (c == 'd' || c == 't' || c == 'D' || c == 'T') {
             runFullSensorDiagnostic();
+        } else if (c == 's' || c == 'S') {
+            Serial.println("\n[Command] Switching to STA (Station) Mode...");
+            EEPROM.write(11, 0); // 0: STA Mode
+            EEPROM.commit();
+            Serial.println("[System] Mode saved. Restarting in 1 second...");
+            delay(1000);
+            ESP.restart();
         }
     }
     
