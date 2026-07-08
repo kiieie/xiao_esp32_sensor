@@ -26,8 +26,6 @@
 #include <BH1750.h>
 #include <arduinoFFT.h>
 #include <ESP32Servo.h>
-#include <arduinoFFT넵.h>
-#include <ESP32Servo.h>
 #include <EEPROM.h>
 #include <VOCGasIndexAlgorithm.h>
 #include <NOxGasIndexAlgorithm.h>
@@ -38,8 +36,8 @@
 namespace Config {
     // --- WiFi 설정 ---
     // 실제 접속할 공유기(AP) 정보 (사용자 컴퓨터와 동일한 네트워크)
-    const char* TARGET_SSID = "ASUS";
-    const char* TARGET_PASS = "11111111";
+    const char* TARGET_SSID = "robot-1";
+    const char* TARGET_PASS = "";
     // const char* TARGET_SSID = "DIRECT-ZvC145x Series le";
     // const char* TARGET_PASS = "11111111";
     

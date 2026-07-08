@@ -1,0 +1,12 @@
+# Arduino / arduino-cli build artifacts
+build/
+*.bin
+*.elf
+*.map
+*.hex
+
+# macOS
+.DS_Store
+
+# Local Claude Code settings
+.claude/
