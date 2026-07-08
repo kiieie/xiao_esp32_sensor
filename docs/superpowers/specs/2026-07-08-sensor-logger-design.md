@@ -24,18 +24,30 @@ CREATE TABLE IF NOT EXISTS readings (
     fft_json TEXT,             -- /fft 응답 원문 그대로 (32밴드 JSON 배열)
     wifi_mode INTEGER, ip TEXT, ssid TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_readings_ts ON readings(ts);
 ```
 
 FFT는 32밴드를 그대로 JSON 문자열로 저장(정규화 안 함) — 조회 빈도 낮고 스키마 단순화 우선.
 
+주의: 펌웨어 `/data`는 BH1750(`c2`)/SGP41(`c3`) 연결 상태만 노출하고 SHT4x 상태는 안 줌(펌웨어 한계, docs/sw.md 참고). SHT 미연결 의심 판별법: temp/humi가 fallback 기본값 `25.0`/`50.0`에 계속 고정돼 있으면 미연결일 가능성 높음.
+
+DB 파일은 리포에 커밋하지 않음 — `.gitignore`에 `*.db` 추가.
+
 ## 동작
 
 - CLI 인자: `--host`(기본 `172.16.100.54`), `--db`(기본 `sensor_log.db`), `--interval`(기본 `1.0`초)
-- 매 interval마다 `/data`, `/fft`, `/sys` 순차 GET(각 타임아웃 3초) → 한 행으로 합쳐 INSERT
+- 매 interval마다 `/data`, `/fft`, `/sys` 순차 GET(각 타임아웃 3초) → 한 행으로 합쳐 INSERT, 즉시 commit
+- **스케줄링은 deadline 기반**: `time.monotonic()`으로 다음 tick 계산, `sleep(interval)` 아님 — 요청 소요시간만큼 주기가 늘어지는 드리프트 방지. 한 사이클이 interval을 초과하면(타임아웃 등) 밀린 tick은 건너뛰고 다음 정시 tick부터 재개.
 - 개별 요청 실패 시: 경고 출력하고 해당 사이클 스킵(스크립트 안 죽음) — 네트워크 일시 단절 대비
+- **WAL 모드 + busy_timeout 설정**: 로거가 도는 동안 `sqlite3` CLI 등 다른 프로세스가 동시에 읽을 수 있어야 함(테스트 방법 자체가 이 시나리오)
 - `Ctrl+C`로 정상 종료(진행 중 커밋 보장)
 - 콘솔에 매 사이클 한 줄 상태 출력(타임스탬프, temp/humi/voc/nox 요약)
 
 ## 테스트 방법
 
-보드 실행 중 상태에서 짧게(예: 10~20초) 돌려 `sqlite3 sensor_log.db "select count(*) from readings;"`로 행 쌓이는지, FFT JSON 파싱 되는지 확인.
+보드 실행 중 상태에서 짧게(예: 10~20초) 돌려 확인:
+
+1. `sqlite3 sensor_log.db "select count(*) from readings;"` — 행 수가 대략 경과 초와 일치(드리프트 없음 검증)
+2. `sqlite3 sensor_log.db "select json_array_length(fft_json) from readings limit 1;"` — 32 나오는지(FFT JSON 유효성)
+3. 로거 실행 중에 위 쿼리 실행 — WAL 덕에 lock 에러 없이 조회되는지
+4. 보드 전원 뽑고 몇 초 뒤 다시 연결 — 로거가 안 죽고 경고만 찍다가 자동 재개하는지
