@@ -4,7 +4,9 @@
 Endpoints polled each cycle: /data (sensor snapshot), /fft (32-band
 spectrum, stored as raw JSON text), /sys (wifi mode / ip / ssid).
 """
+import json
 import sqlite3
+import urllib.request
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS readings (
@@ -59,3 +61,16 @@ def next_deadline(deadline, now, interval):
         missed = int((now - deadline) // interval) + 1
         deadline += missed * interval
     return deadline
+
+
+def fetch_text(url, timeout=3.0):
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        return resp.read().decode("utf-8")
+
+
+def poll_once(base_url, timeout=3.0):
+    data = json.loads(fetch_text(base_url + "/data", timeout))
+    fft_text = fetch_text(base_url + "/fft", timeout)
+    json.loads(fft_text)  # reject non-JSON payloads early
+    sysinfo = json.loads(fetch_text(base_url + "/sys", timeout))
+    return data, fft_text, sysinfo

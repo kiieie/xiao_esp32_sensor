@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 
 import logger
 
@@ -67,6 +68,38 @@ class TestScheduling(unittest.TestCase):
 
     def test_fractional_interval(self):
         self.assertAlmostEqual(logger.next_deadline(10.0, 10.1, 0.5), 10.5)
+
+
+class TestPolling(unittest.TestCase):
+    def test_poll_once_hits_three_endpoints(self):
+        responses = {
+            "http://h/data": json.dumps(SAMPLE_DATA),
+            "http://h/fft": SAMPLE_FFT,
+            "http://h/sys": json.dumps(SAMPLE_SYS),
+        }
+        with mock.patch.object(logger, "fetch_text",
+                               side_effect=lambda url, timeout=3.0: responses[url]) as m:
+            data, fft_text, sysinfo = logger.poll_once("http://h")
+        self.assertEqual(data["temp"], 26.8)
+        self.assertEqual(json.loads(fft_text)[0]["freq"], 0)
+        self.assertEqual(sysinfo["ss"], "robot-1")
+        self.assertEqual(m.call_count, 3)
+
+    def test_poll_once_propagates_error(self):
+        with mock.patch.object(logger, "fetch_text", side_effect=OSError("timed out")):
+            with self.assertRaises(OSError):
+                logger.poll_once("http://h")
+
+    def test_poll_once_rejects_invalid_fft(self):
+        responses = {
+            "http://h/data": json.dumps(SAMPLE_DATA),
+            "http://h/fft": "<html>not json</html>",
+            "http://h/sys": json.dumps(SAMPLE_SYS),
+        }
+        with mock.patch.object(logger, "fetch_text",
+                               side_effect=lambda url, timeout=3.0: responses[url]):
+            with self.assertRaises(json.JSONDecodeError):
+                logger.poll_once("http://h")
 
 
 if __name__ == "__main__":
