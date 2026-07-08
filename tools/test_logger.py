@@ -52,5 +52,22 @@ class TestDb(unittest.TestCase):
         self.assertEqual(got[13], "robot-1")
 
 
+class TestScheduling(unittest.TestCase):
+    def test_normal_advance(self):
+        # 사이클이 interval 안에 끝난 경우: 단순히 +interval
+        self.assertEqual(logger.next_deadline(10.0, 10.4, 1.0), 11.0)
+
+    def test_skip_missed_ticks(self):
+        # 사이클이 2.5초 걸린 경우(예: 타임아웃): 11.0, 12.0 tick은 버리고 13.0
+        self.assertEqual(logger.next_deadline(10.0, 12.5, 1.0), 13.0)
+
+    def test_boundary_exactly_on_tick(self):
+        # now가 정확히 다음 tick 위: 그 tick은 이미 지난 것으로 보고 다음으로
+        self.assertEqual(logger.next_deadline(10.0, 11.0, 1.0), 12.0)
+
+    def test_fractional_interval(self):
+        self.assertAlmostEqual(logger.next_deadline(10.0, 10.1, 0.5), 10.5)
+
+
 if __name__ == "__main__":
     unittest.main()

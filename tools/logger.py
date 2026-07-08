@@ -50,3 +50,12 @@ def build_row(ts, data, fft_text, sysinfo):
 def insert_reading(conn, row):
     conn.execute(INSERT_SQL, row)
     conn.commit()
+
+
+def next_deadline(deadline, now, interval):
+    """Return the next future tick, skipping any ticks missed while busy."""
+    deadline += interval
+    if deadline <= now:
+        missed = int((now - deadline) // interval) + 1
+        deadline += missed * interval
+    return deadline
