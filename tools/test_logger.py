@@ -1,3 +1,5 @@
+import io
+import itertools
 import json
 import os
 import sqlite3
@@ -100,6 +102,91 @@ class TestPolling(unittest.TestCase):
                                side_effect=lambda url, timeout=3.0: responses[url]):
             with self.assertRaises(json.JSONDecodeError):
                 logger.poll_once("http://h")
+
+
+class TestMainLoop(unittest.TestCase):
+    """End-to-end coverage for main()'s poll/sleep/insert loop, with mocked
+    time and network but a real temp SQLite DB (real init_db/build_row/
+    insert_reading)."""
+
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.addCleanup(os.remove, self.path)
+
+    def _run_main(self, poll_side_effect, extra_patches=()):
+        monotonic_counter = itertools.count(0.0, 1.0)
+        patches = [
+            mock.patch.object(logger, "poll_once", side_effect=poll_side_effect),
+            mock.patch.object(logger.time, "sleep"),
+            mock.patch.object(logger.time, "monotonic",
+                               side_effect=lambda: next(monotonic_counter)),
+            mock.patch.object(logger.time, "time", return_value=1751900000.0),
+        ] + list(extra_patches)
+        stderr = io.StringIO()
+        with mock.patch("sys.stderr", stderr):
+            for p in patches:
+                p.start()
+            try:
+                rc = logger.main(["--db", self.path, "--interval", "1.0"])
+            finally:
+                for p in patches:
+                    p.stop()
+        return rc, stderr.getvalue()
+
+    def test_runs_iterations_and_survives_poll_failure(self):
+        sample2 = dict(SAMPLE_DATA, temp=27.1)
+        poll_effects = [
+            (SAMPLE_DATA, SAMPLE_FFT, SAMPLE_SYS),   # iteration 1: success
+            OSError("boom"),                          # iteration 2: poll fails
+            (sample2, SAMPLE_FFT, SAMPLE_SYS),        # iteration 3: success
+            KeyboardInterrupt(),                      # iteration 4: stop the loop
+        ]
+        rc, err = self._run_main(poll_effects)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("[warn]", err)
+
+        conn = sqlite3.connect(self.path)
+        try:
+            rows = conn.execute(
+                "SELECT temp, humi, voc, nox FROM readings ORDER BY id"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        # Only the 2 successful cycles should have inserted a row; the
+        # failed poll must not leave a row behind.
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0], (SAMPLE_DATA["temp"], SAMPLE_DATA["humi"],
+                                    SAMPLE_DATA["voc"], SAMPLE_DATA["nox"]))
+        self.assertEqual(rows[1], (sample2["temp"], sample2["humi"],
+                                    sample2["voc"], sample2["nox"]))
+
+    def test_survives_insert_failure(self):
+        poll_effects = [
+            (SAMPLE_DATA, SAMPLE_FFT, SAMPLE_SYS),   # iteration 1: success
+            (SAMPLE_DATA, SAMPLE_FFT, SAMPLE_SYS),   # iteration 2: success
+            KeyboardInterrupt(),                      # iteration 3: stop the loop
+        ]
+        insert_effects = [sqlite3.OperationalError("database is locked"), None]
+        extra = [mock.patch.object(logger, "insert_reading",
+                                    side_effect=insert_effects)]
+        rc, err = self._run_main(poll_effects, extra_patches=extra)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("[warn]", err)
+
+
+class TestArgValidation(unittest.TestCase):
+    def test_non_positive_interval_rejected(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.addCleanup(os.remove, path)
+        with mock.patch("sys.stderr", io.StringIO()):
+            self.assertRaises(
+                SystemExit, logger.main,
+                ["--interval", "0", "--db", path])
 
 
 if __name__ == "__main__":

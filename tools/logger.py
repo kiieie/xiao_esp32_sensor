@@ -85,6 +85,8 @@ def main(argv=None):
     ap.add_argument("--db", default="sensor_log.db", help="SQLite file path")
     ap.add_argument("--interval", type=float, default=1.0, help="poll period seconds")
     args = ap.parse_args(argv)
+    if args.interval <= 0:
+        ap.error("--interval must be positive")
 
     base_url = "http://" + args.host
     conn = init_db(args.db)
@@ -100,11 +102,11 @@ def main(argv=None):
             ts = time.time()
             try:
                 data, fft_text, sysinfo = poll_once(base_url)
+                insert_reading(conn, build_row(ts, data, fft_text, sysinfo))
             except Exception as e:
-                print("[warn] %s poll failed: %s"
+                print("[warn] %s cycle failed: %s"
                       % (time.strftime("%H:%M:%S"), e), file=sys.stderr)
                 continue
-            insert_reading(conn, build_row(ts, data, fft_text, sysinfo))
             print("[%s] temp=%s humi=%s voc=%s nox=%s"
                   % (time.strftime("%H:%M:%S"), data.get("temp"),
                      data.get("humi"), data.get("voc"), data.get("nox")))
