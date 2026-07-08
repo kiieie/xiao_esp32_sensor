@@ -5,6 +5,11 @@ build/
 *.map
 *.hex
 
+# Sensor logger output
+*.db
+*.db-wal
+*.db-shm
+
 # macOS
 .DS_Store
 

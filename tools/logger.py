@@ -4,8 +4,11 @@
 Endpoints polled each cycle: /data (sensor snapshot), /fft (32-band
 spectrum, stored as raw JSON text), /sys (wifi mode / ip / ssid).
 """
+import argparse
 import json
 import sqlite3
+import sys
+import time
 import urllib.request
 
 SCHEMA = """
@@ -74,3 +77,43 @@ def poll_once(base_url, timeout=3.0):
     json.loads(fft_text)  # reject non-JSON payloads early
     sysinfo = json.loads(fetch_text(base_url + "/sys", timeout))
     return data, fft_text, sysinfo
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--host", default="172.16.100.54", help="sensor hub IP")
+    ap.add_argument("--db", default="sensor_log.db", help="SQLite file path")
+    ap.add_argument("--interval", type=float, default=1.0, help="poll period seconds")
+    args = ap.parse_args(argv)
+
+    base_url = "http://" + args.host
+    conn = init_db(args.db)
+    print("[logger] polling %s every %.1fs -> %s" % (base_url, args.interval, args.db))
+
+    deadline = time.monotonic()
+    try:
+        while True:
+            now = time.monotonic()
+            if now < deadline:
+                time.sleep(deadline - now)
+            deadline = next_deadline(deadline, time.monotonic(), args.interval)
+            ts = time.time()
+            try:
+                data, fft_text, sysinfo = poll_once(base_url)
+            except Exception as e:
+                print("[warn] %s poll failed: %s"
+                      % (time.strftime("%H:%M:%S"), e), file=sys.stderr)
+                continue
+            insert_reading(conn, build_row(ts, data, fft_text, sysinfo))
+            print("[%s] temp=%s humi=%s voc=%s nox=%s"
+                  % (time.strftime("%H:%M:%S"), data.get("temp"),
+                     data.get("humi"), data.get("voc"), data.get("nox")))
+    except KeyboardInterrupt:
+        print("\n[logger] stopped")
+    finally:
+        conn.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

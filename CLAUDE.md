@@ -45,7 +45,7 @@ arduino-cli monitor -p <PORT> -c baudrate=115200
 arduino-cli lib install "ESP Async WebServer" "Async TCP" "Sensirion I2C SHT4x" "Sensirion I2C SGP41" "BH1750" "arduinoFFT" "ESP32Servo" "Sensirion Gas Index Algorithm"
 ```
 
-자동화 테스트 없음. 검증은 수동: 플래시 후 시리얼 모니터 확인 및/또는 HTTP 엔드포인트 호출(`curl http://<ip>/data`, `/fft`, `/sys`). 시리얼 콘솔은 런타임에 단일 문자 명령 지원: `d`/`t`는 전체 센서 진단 실행, `s`는 STA 모드 강제 전환 후 재시작.
+자동화 테스트 없음. 검증은 수동: 플래시 후 시리얼 모니터 확인 및/또는 HTTP 엔드포인트 호출(`curl http://<ip>/data`, `/fft`, `/sys`). 시리얼 콘솔은 런타임에 단일 문자 명령 지원: `d`/`t`는 전체 센서 진단 실행, `s`는 STA 모드 강제 전환 후 재시작. 데이터 적재는 `python3 tools/logger.py --host <보드IP>` (1초 간격 SQLite 로깅, 상세는 `docs/superpowers/specs/2026-07-08-sensor-logger-design.md`). 로거 단위 테스트: `python3 -m unittest discover -s tools -v`.
 
 ## 아키텍처
 
